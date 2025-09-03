@@ -1058,6 +1058,33 @@ class CoreMLDetailerHookProvider:
         return (hook, )
 
 
+class FlexibleSizeDetailerHookProvider:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+                    "mode": (["Fixed Size", "Target Width", "Target Height", "Scale to Size", "Pass Through"], ),
+                    "width": ("INT", {"default": 512, "min": 64, "max": 8192, "step": 8}),
+                    "height": ("INT", {"default": 512, "min": 64, "max": 8192, "step": 8}),
+                    },
+                }
+
+    RETURN_TYPES = ("DETAILER_HOOK",)
+    FUNCTION = "doit"
+
+    CATEGORY = "ImpactPack/Detailer"
+    
+    DESCRIPTION = """Provides flexible control over the detailer's output size:
+- Fixed Size: Use exact width and height specified
+- Target Width: Set width, maintain aspect ratio  
+- Target Height: Set height, maintain aspect ratio
+- Scale to Size: Fit within width x height box, maintain aspect ratio
+- Pass Through: Use normal detailer calculations"""
+
+    def doit(self, mode, width, height):
+        hook = hooks.FlexibleSizeDetailerHook(mode, width, height)
+        return (hook, )
+
+
 class CustomSamplerDetailerHookProvider:
     @classmethod
     def INPUT_TYPES(s):

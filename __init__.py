@@ -116,6 +116,7 @@ NODE_CLASS_MAPPINGS = {
     "NoiseInjectionHookProvider": NoiseInjectionHookProvider, # noqa: F405
     "UnsamplerHookProvider": UnsamplerHookProvider, # noqa: F405
     "CoreMLDetailerHookProvider": CoreMLDetailerHookProvider, # noqa: F405
+    "FlexibleSizeDetailerHookProvider": FlexibleSizeDetailerHookProvider, # noqa: F405
     "PreviewDetailerHookProvider": PreviewDetailerHookProvider, # noqa: F405
     "BlackPatchRetryHookProvider": BlackPatchRetryHookProvider, # noqa: F405
     "CustomSamplerDetailerHookProvider": CustomSamplerDetailerHookProvider, # noqa: F405

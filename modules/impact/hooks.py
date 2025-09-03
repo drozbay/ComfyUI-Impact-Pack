@@ -314,6 +314,46 @@ class CoreMLHook(DetailerHook):
         return self.w, self.h
 
 
+class FlexibleSizeDetailerHook(DetailerHook):
+    def __init__(self, mode, width=None, height=None):
+        super().__init__()
+        self.mode = mode
+        self.width = width
+        self.height = height
+        
+    def touch_scaled_size(self, w, h):
+        if self.mode == "Fixed Size":
+            # Use exact specified dimensions
+            return self.width, self.height
+        elif self.mode == "Target Width":
+            # Maintain aspect ratio, set width
+            aspect_ratio = h / w
+            return self.width, int(self.width * aspect_ratio)
+        elif self.mode == "Target Height":
+            # Maintain aspect ratio, set height
+            aspect_ratio = w / h  
+            return int(self.height * aspect_ratio), self.height
+        elif self.mode == "Scale to Size":
+            # Scale to fit within specified size maintaining aspect ratio
+            aspect_ratio = h / w
+            if w > h:
+                new_w = self.width
+                new_h = int(new_w * aspect_ratio)
+                if new_h > self.height:
+                    new_h = self.height
+                    new_w = int(new_h / aspect_ratio)
+            else:
+                new_h = self.height
+                new_w = int(new_h / aspect_ratio)
+                if new_w > self.width:
+                    new_w = self.width
+                    new_h = int(new_w * aspect_ratio)
+            return new_w, new_h
+        else:
+            # Pass through original size
+            return w, h
+
+
 # REQUIREMENTS: BlenderNeko/ComfyUI Noise
 class InjectNoiseHook(PixelKSampleHook):
     def __init__(self, source, seed, start_strength, end_strength):
