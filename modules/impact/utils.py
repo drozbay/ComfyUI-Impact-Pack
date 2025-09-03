@@ -7,8 +7,64 @@ import nodes
 from . import config
 from PIL import Image
 import comfy
+import comfy.model_base
 import time
 import logging
+
+
+# Checks if a model is a known image-only (non-video) model.
+def is_known_image_model(model):
+    image_model_classes = ()
+    try:
+        image_model_classes = (
+            comfy.model_base.SD15,
+            comfy.model_base.SD20,
+            comfy.model_base.SD21UNCLIP,
+            comfy.model_base.SDXLRefiner,
+            comfy.model_base.SDXL,
+            comfy.model_base.SD_X4Upscaler,
+            comfy.model_base.Stable_Zero123,
+            comfy.model_base.SD15_instructpix2pix,
+            comfy.model_base.SDXL_instructpix2pix,
+            comfy.model_base.StableCascade_C,
+            comfy.model_base.StableCascade_B,
+            comfy.model_base.SD3,
+            comfy.model_base.AuraFlow,
+            comfy.model_base.HunyuanDiT,
+            comfy.model_base.PixArt,
+            comfy.model_base.Flux,
+            comfy.model_base.Lotus,
+            comfy.model_base.Lumina2,
+            comfy.model_base.Hunyuan3Dv2,
+            comfy.model_base.HiDream,
+            comfy.model_base.ACEStep,
+            comfy.model_base.Omnigen2,
+            comfy.model_base.QwenImage,
+        )
+    except AttributeError:
+        pass
+    
+    if hasattr(model, 'model') and hasattr(model, 'patches'):
+        actual_model = model.model
+    else:
+        actual_model = model
+    
+    if image_model_classes and isinstance(actual_model, image_model_classes):
+        # double-check for temporal features even in "image" model base classes
+        # Some models might inherit from image model classes but add video support
+        if hasattr(actual_model, 'model_config'):
+            model_config = actual_model.model_config
+            if hasattr(model_config, 'unet_config'):
+                unet_config = model_config.unet_config
+                # Check for temporal attention flags
+                if unet_config.get('use_temporal_attention', False):
+                    return False  # Actually supports video
+                if unet_config.get('use_temporal_resblock', False):
+                    return False  # Actually supports video
+        return True
+    
+    # Not a known image model (could be video, audio, or custom)
+    return False
 
 
 class TensorBatchBuilder:

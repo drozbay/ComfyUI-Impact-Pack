@@ -266,8 +266,8 @@ class DetailerForEach:
                   refiner_ratio=None, refiner_model=None, refiner_clip=None, refiner_positive=None, refiner_negative=None,
                   cycle=1, inpaint_model=False, noise_mask_feather=0, scheduler_func_opt=None, tiled_encode=False, tiled_decode=False):
 
-        # if len(image) > 1:
-        #     raise Exception('[Impact Pack] ERROR: DetailerForEach does not allow image batches.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
+        if utils.is_known_image_model(model) and len(image) > 1:
+            raise Exception('[Impact Pack] ERROR: Batch processing is not supported with standard image models.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
 
         image = image.clone()
         enhanced_alpha_list = []
@@ -483,8 +483,8 @@ class DetailerForEachAutoRetry:
                   refiner_ratio=None, refiner_model=None, refiner_clip=None, refiner_positive=None, refiner_negative=None,
                   cycle=1, inpaint_model=False, noise_mask_feather=0, scheduler_func_opt=None, tiled_encode=False, tiled_decode=False, max_retries=1):
 
-        # if len(image) > 1:
-        #     raise Exception('[Impact Pack] ERROR: DetailerForEach does not allow image batches.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
+        if utils.is_known_image_model(model) and len(image) > 1:
+            raise Exception('[Impact Pack] ERROR: Batch processing is not supported with standard image models.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
 
         image = image.clone()
         enhanced_alpha_list = []
@@ -706,10 +706,10 @@ class DetailerForEachPipe:
              cycle=1, inpaint_model=False, noise_mask_feather=0, scheduler_func_opt=None,
              tiled_encode=False, tiled_decode=False):
 
-        # if len(image) > 1:
-        #     raise Exception('[Impact Pack] ERROR: DetailerForEach does not allow image batches.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
-
         model, clip, vae, positive, negative = basic_pipe
+        
+        if utils.is_known_image_model(model) and len(image) > 1:
+                raise Exception('[Impact Pack] ERROR: Batch processing is not supported with standard image models (SD1.5, SDXL, etc). Please process one image at a time.\nFor video models or custom models, batch processing is allowed.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
 
         if refiner_basic_pipe_opt is None:
             refiner_model, refiner_clip, refiner_positive, refiner_negative = None, None, None, None
@@ -1789,10 +1789,10 @@ class MaskDetailerPipe:
              refiner_basic_pipe_opt=None, detailer_hook=None, inpaint_model=False, noise_mask_feather=0,
              bbox_fill=False, contour_fill=True, scheduler_func_opt=None):
 
-        # if len(image) > 1:
-        #     raise Exception('[Impact Pack] ERROR: MaskDetailer does not allow image batches.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
-
         model, clip, vae, positive, negative = basic_pipe
+        
+        if utils.is_known_image_model(model) and len(image) > 1:
+            raise Exception('[Impact Pack] ERROR: Batch processing is not supported with standard image models.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
 
         if refiner_basic_pipe_opt is None:
             refiner_model, refiner_clip, refiner_positive, refiner_negative = None, None, None, None
@@ -1853,8 +1853,8 @@ class DetailerForEachTest(DetailerForEach):
              scheduler, positive, negative, denoise, feather, noise_mask, force_inpaint, wildcard, detailer_hook=None,
              cycle=1, inpaint_model=False, noise_mask_feather=0, scheduler_func_opt=None, tiled_encode=False, tiled_decode=False):
 
-        # if len(image) > 1:
-        #     raise Exception('[Impact Pack] ERROR: DetailerForEach does not allow image batches.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
+        if utils.is_known_image_model(model) and len(image) > 1:
+            raise Exception('[Impact Pack] ERROR: Batch processing is not supported with standard image models.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
 
         enhanced_img, cropped, cropped_enhanced, cropped_enhanced_alpha, cnet_pil_list, new_segs = \
             DetailerForEach.do_detail(image, segs, model, clip, vae, guide_size, guide_size_for, max_size, seed, steps,
@@ -1895,10 +1895,10 @@ class DetailerForEachTestPipe(DetailerForEachPipe):
              refiner_ratio=None, detailer_hook=None, refiner_basic_pipe_opt=None, inpaint_model=False, noise_mask_feather=0,
              scheduler_func_opt=None, tiled_encode=False, tiled_decode=False):
 
-        # if len(image) > 1:
-        #     raise Exception('[Impact Pack] ERROR: DetailerForEach does not allow image batches.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
-
         model, clip, vae, positive, negative = basic_pipe
+        
+        if utils.is_known_image_model(model) and len(image) > 1:
+            raise Exception('[Impact Pack] ERROR: Batch processing is not supported with standard image models.\nPlease refer to https://github.com/ltdrdata/ComfyUI-extension-tutorials/blob/Main/ComfyUI-Impact-Pack/tutorial/batching-detailer.md for more information.')
 
         if refiner_basic_pipe_opt is None:
             refiner_model, refiner_clip, refiner_positive, refiner_negative = None, None, None, None
