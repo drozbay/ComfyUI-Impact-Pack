@@ -891,9 +891,18 @@ def make_sam_mask(sam, segs, image, detection_hint, dilation,
         sam_obj.release_device()
 
     if mask is not None:
-        mask = mask.float()
-        mask = utils.dilate_mask(mask.cpu().numpy(), dilation)
-        mask = torch.from_numpy(mask)
+        if isinstance(mask, torch.Tensor):
+            mask = mask.float()
+            mask_np = mask.cpu().numpy()
+        else:
+            mask_np = mask
+        
+        mask_np = utils.dilate_mask(mask_np, dilation)
+        
+        if not isinstance(mask_np, torch.Tensor):
+            mask = torch.from_numpy(mask_np)
+        else:
+            mask = mask_np
     else:
         size = image.shape[0], image.shape[1]
         mask = torch.zeros(size, dtype=torch.float32, device="cpu")  # empty mask
@@ -1113,9 +1122,18 @@ def make_sam_mask_segmented(sam, segs, image, detection_hint, dilation,
     mask_working_device = torch.device("cpu")
 
     if mask is not None:
-        mask = mask.float()
-        mask = utils.dilate_mask(mask.cpu().numpy(), dilation)
-        mask = torch.from_numpy(mask)
+        if isinstance(mask, torch.Tensor):
+            mask = mask.float()
+            mask_np = mask.cpu().numpy()
+        else:
+            mask_np = mask
+        
+        mask_np = utils.dilate_mask(mask_np, dilation)
+        
+        if not isinstance(mask_np, torch.Tensor):
+            mask = torch.from_numpy(mask_np)
+        else:
+            mask = mask_np
         mask = mask.to(device=mask_working_device)
     else:
         # Extracting batch, height and width

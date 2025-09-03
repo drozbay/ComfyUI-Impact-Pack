@@ -423,9 +423,40 @@ def use_gpu_opencv():
 
 def dilate_mask(mask, dilation_factor, iter=1):
     if dilation_factor == 0:
-        return make_2d_mask(mask)
-
+        return mask
+    
+    # Handle temporal masks (3D)
+    if isinstance(mask, torch.Tensor) and len(mask.shape) == 3:
+        # Process each frame independently
+        dilated_frames = []
+        kernel = np.ones((abs(dilation_factor), abs(dilation_factor)), np.uint8)
+        
+        for i in range(mask.shape[0]):
+            frame_mask = mask[i].cpu().numpy()
+            
+            if use_gpu_opencv():
+                frame_mask = cv2.UMat(frame_mask)
+                kernel_gpu = cv2.UMat(kernel)
+                if dilation_factor > 0:
+                    result = cv2.dilate(frame_mask, kernel_gpu, iter)
+                else:
+                    result = cv2.erode(frame_mask, kernel_gpu, iter)
+                dilated_frames.append(torch.from_numpy(result.get()))
+            else:
+                if dilation_factor > 0:
+                    result = cv2.dilate(frame_mask, kernel, iter)
+                else:
+                    result = cv2.erode(frame_mask, kernel, iter)
+                dilated_frames.append(torch.from_numpy(result))
+        
+        # Stack frames back into temporal mask
+        return torch.stack(dilated_frames, dim=0)
+    
+    # 2D mask
     mask = make_2d_mask(mask)
+    
+    if isinstance(mask, torch.Tensor):
+        mask = mask.cpu().numpy()
 
     kernel = np.ones((abs(dilation_factor), abs(dilation_factor)), np.uint8)
 

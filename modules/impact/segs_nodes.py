@@ -1162,7 +1162,14 @@ class GaussianBlurMaskInSEGS:
         new_segs = []
         for seg in segs[1]:
             mask = utils.tensor_gaussian_blur_mask(seg.cropped_mask, kernel_size, sigma)
-            mask = torch.squeeze(mask, dim=-1).squeeze(0).numpy()
+            # Handle temporal masks (3D)
+            if isinstance(seg.cropped_mask, torch.Tensor) and len(seg.cropped_mask.shape) == 3:
+                # keep the time dimension, remove only the channel dimension
+                mask = torch.squeeze(mask, dim=-1)
+                if isinstance(mask, torch.Tensor):
+                    mask = mask.cpu().numpy()
+            else:
+                mask = torch.squeeze(mask, dim=-1).squeeze(0).cpu().numpy()
             seg = SEG(seg.cropped_image, mask, seg.confidence, seg.crop_region, seg.bbox, seg.label, seg.control_net_wrapper)
             new_segs.append(seg)
 
