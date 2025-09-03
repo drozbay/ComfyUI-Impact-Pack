@@ -1,4 +1,5 @@
 import logging
+import numpy as np
 
 import impact.core as core
 from nodes import MAX_RESOLUTION
@@ -6,6 +7,7 @@ import impact.segs_nodes as segs_nodes
 import impact.utils as utils
 import torch
 from impact.core import SEG
+import comfy.utils
 
 SAM_MODEL_TOOLTIP = {"tooltip": "Segment Anything Model for Silhouette Detection.\nBe sure to use the SAM_MODEL loaded through the SAMLoader (Impact) node as input."}
 SAM_MODEL_TOOLTIP_OPTIONAL = {"tooltip": "[OPTIONAL]\nSegment Anything Model for Silhouette Detection.\nBe sure to use the SAM_MODEL loaded through the SAMLoader (Impact) node as input.\nGiven this input, it refines the rectangular areas detected by BBOX_DETECTOR into silhouette shapes through SAM.\nsam_model_opt takes priority over segm_detector_opt."}
@@ -415,7 +417,8 @@ class SimpleDetectorForAnimateDiff:
                       },
                 "optional": {
                         "masking_mode": (["Pivot SEGS", "Combine neighboring frames", "Don't combine"],),
-                        "segs_pivot": (["Combined mask", "1st frame mask"],),
+                        "segs_pivot": (["Combined mask", "1st frame mask", "Averaged mask"],),
+                        "pivot_threshold": ("FLOAT", {"default": 0.5, "min": 0.01, "max": 1.0, "step": 0.01, "tooltip": "For 'Averaged mask' pivot: threshold for including pixels (0.5 = detected in 50% of frames)"}),
                         "sam_model_opt": ("SAM_MODEL", SAM_MODEL_TOOLTIP_OPTIONAL),
                         "segm_detector_opt": ("SEGM_DETECTOR", ),
                  }
@@ -429,14 +432,18 @@ class SimpleDetectorForAnimateDiff:
     @staticmethod
     def detect(bbox_detector, image_frames, bbox_threshold, bbox_dilation, crop_factor, drop_size,
                sub_threshold, sub_dilation, sub_bbox_expansion, sam_mask_hint_threshold,
-               masking_mode="Pivot SEGS", segs_pivot="Combined mask", sam_model_opt=None, segm_detector_opt=None):
+               masking_mode="Pivot SEGS", segs_pivot="Combined mask", pivot_threshold=0.5, sam_model_opt=None, segm_detector_opt=None):
 
         h = image_frames.shape[1]
         w = image_frames.shape[2]
+        total_frames = len(image_frames)
+
+        # Create progress bar
+        pbar = comfy.utils.ProgressBar(total_frames)
 
         # gather segs for all frames
         segs_by_frames = []
-        for image in image_frames:
+        for i, image in enumerate(image_frames):
             image = image.unsqueeze(0)
             segs = bbox_detector.detect(image, bbox_threshold, bbox_dilation, crop_factor, drop_size)
 
@@ -450,6 +457,8 @@ class SimpleDetectorForAnimateDiff:
                 segs = core.segs_bitwise_and_mask(segs, mask)
 
             segs_by_frames.append(segs)
+            
+            pbar.update(1)
 
         def get_masked_frames():
             masks_by_frame = []
@@ -509,16 +518,42 @@ class SimpleDetectorForAnimateDiff:
             merged_mask = (merged_mask / 255.0).to(torch.float32)
             merged_mask = utils.to_binary_mask(merged_mask, 0.1)[0]
             return merged_mask
+        
+        def get_averaged_mask(threshold):
+            all_masks = []
+            for segs in segs_by_frames:
+                all_masks += segs_nodes.SEGSToMaskList().doit(segs)[0]
+            
+            if len(all_masks) == 0:
+                return get_empty_mask()
+            
+            # Sum all masks to get frequency count
+            sum_mask = torch.zeros_like(all_masks[0], dtype=torch.float32)
+            for mask in all_masks:
+                sum_mask += mask.float()
+            
+            # Average by number of frames (not number of masks, since one frame can have multiple masks)
+            # This gives us the percentage of frames where each pixel was detected
+            avg_mask = sum_mask / len(segs_by_frames)
+            
+            # Apply threshold to get binary mask
+            # e.g., threshold=0.5 means pixel must be detected in at least 50% of frames
+            binary_mask = (avg_mask >= threshold).float()
+            
+            return binary_mask
 
-        def get_pivot_segs():
+        def get_pivot_segs(pivot_threshold=0.5):
             if segs_pivot == "1st frame mask":
-                return segs_by_frames[0][1]
-            else:
+                return segs_by_frames[0]
+            elif segs_pivot == "Averaged mask":
+                averaged_mask = get_averaged_mask(pivot_threshold)
+                return segs_nodes.MaskToSEGS.doit(averaged_mask, False, crop_factor, False, drop_size, contour_fill=True)[0]
+            else:  # "Combined mask"
                 merged_mask = get_whole_merged_mask()
                 return segs_nodes.MaskToSEGS.doit(merged_mask, False, crop_factor, False, drop_size, contour_fill=True)[0]
 
         def get_segs(merged_neighboring=False):
-            pivot_segs = get_pivot_segs()
+            pivot_segs = get_pivot_segs(pivot_threshold)
 
             masks_by_frame = get_masked_frames()
             if merged_neighboring:
@@ -526,24 +561,43 @@ class SimpleDetectorForAnimateDiff:
 
             new_segs = []
             for seg in pivot_segs[1]:
-                cropped_mask = torch.zeros(seg.cropped_mask.shape, dtype=torch.float32, device="cpu").unsqueeze(0)
-                pivot_mask = torch.from_numpy(seg.cropped_mask)
+                if isinstance(seg.cropped_mask, np.ndarray):
+                    pivot_mask = torch.from_numpy(seg.cropped_mask)
+                else:
+                    pivot_mask = seg.cropped_mask
+                
+                # If pivot_mask has temporal dimension (3D), take first frame
+                if pivot_mask.dim() == 3:
+                    pivot_mask = pivot_mask[0]
+                
+                # Initialize temporal mask and image storage
+                cropped_mask = torch.zeros(pivot_mask.shape, dtype=torch.float32, device="cpu").unsqueeze(0)
                 x1, y1, x2, y2 = seg.crop_region
-                for mask in masks_by_frame:
+                
+                # Also build temporal stack of cropped images
+                cropped_images = []
+                for i, mask in enumerate(masks_by_frame):
+                    # Extract cropped mask for this frame
                     cropped_mask_at_frame = (mask[y1:y2, x1:x2] * pivot_mask).unsqueeze(0)
                     cropped_mask = torch.cat((cropped_mask, cropped_mask_at_frame), dim=0)
+                    
+                    # Extract cropped image for this frame
+                    cropped_img = image_frames[i:i+1, y1:y2, x1:x2, :]
+                    cropped_images.append(cropped_img)
 
                 if len(cropped_mask) > 1:
                     cropped_mask = cropped_mask[1:]
-
-                new_seg = SEG(seg.cropped_image, cropped_mask, seg.confidence, seg.crop_region, seg.bbox, seg.label, seg.control_net_wrapper)
+                
+                # Stack all cropped images into temporal dimension
+                cropped_image_stack = torch.cat(cropped_images, dim=0) if cropped_images else seg.cropped_image
+                new_seg = SEG(cropped_image_stack, cropped_mask, seg.confidence, seg.crop_region, seg.bbox, seg.label, seg.control_net_wrapper)
                 new_segs.append(new_seg)
 
             return pivot_segs[0], new_segs
 
         # create result mask
         if masking_mode == "Pivot SEGS":
-            return (get_pivot_segs(), )
+            return (get_pivot_segs(pivot_threshold), )
 
         elif masking_mode == "Combine neighboring frames":
             return (get_segs(merged_neighboring=True), )
@@ -553,8 +607,8 @@ class SimpleDetectorForAnimateDiff:
 
     def doit(self, bbox_detector, image_frames, bbox_threshold, bbox_dilation, crop_factor, drop_size,
              sub_threshold, sub_dilation, sub_bbox_expansion, sam_mask_hint_threshold,
-             masking_mode="Pivot SEGS", segs_pivot="Combined mask", sam_model_opt=None, segm_detector_opt=None):
+             masking_mode="Pivot SEGS", segs_pivot="Combined mask", pivot_threshold=0.5, sam_model_opt=None, segm_detector_opt=None):
 
         return SimpleDetectorForAnimateDiff.detect(bbox_detector, image_frames, bbox_threshold, bbox_dilation, crop_factor, drop_size,
                                                    sub_threshold, sub_dilation, sub_bbox_expansion, sam_mask_hint_threshold,
-                                                   masking_mode, segs_pivot, sam_model_opt, segm_detector_opt)
+                                                   masking_mode, segs_pivot, pivot_threshold, sam_model_opt, segm_detector_opt)
