@@ -76,6 +76,7 @@ class CLIPSegDetectorProvider:
                         "blur": ("FLOAT", {"min": 0, "max": 15, "step": 0.1, "default": 7, "tooltip": "Blurs the detected mask"}),
                         "threshold": ("FLOAT", {"min": 0, "max": 1, "step": 0.05, "default": 0.4, "tooltip": "Detects only areas that are certain above the threshold."}),
                         "dilation_factor": ("INT", {"min": 0, "max": 10, "step": 1, "default": 4, "tooltip": "Dilates the detected mask."}),
+                        "use_legacy_clipseg": ("BOOLEAN", {"default": False, "tooltip": "Use the old CLIPSeg implementation (slower but may be needed for compatibility)"}),
                     }
                 }
 
@@ -84,14 +85,25 @@ class CLIPSegDetectorProvider:
 
     CATEGORY = "ImpactPack/Util"
 
-    DESCRIPTION = "Provides a detection function using CLIPSeg, which generates masks based on text prompts.\nTo use this node, the CLIPSeg custom node must be installed."
+    DESCRIPTION = "Provides a detection function using CLIPSeg, which generates masks based on text prompts."
 
-    def doit(self, text, blur, threshold, dilation_factor):
-        if "CLIPSeg" in nodes.NODE_CLASS_MAPPINGS:
-            return (core.BBoxDetectorBasedOnCLIPSeg(text, blur, threshold, dilation_factor), )
+    def doit(self, text, blur, threshold, dilation_factor, use_legacy_clipseg=False):
+        if use_legacy_clipseg:
+            if "CLIPSeg" in nodes.NODE_CLASS_MAPPINGS:
+                return (core.BBoxDetectorBasedOnCLIPSeg(text, blur, threshold, dilation_factor), )
+            else:
+                logging.error("[ERROR] CLIPSegToBboxDetector: CLIPSeg custom node isn't installed. You must install biegert/ComfyUI-CLIPSeg extension to use legacy clipseg.")
+                raise Exception("[ERROR] CLIPSegToBboxDetector: CLIPSeg custom node isn't installed. You must install biegert/ComfyUI-CLIPSeg extension to use legacy clipseg.")
         else:
-            logging.error("[ERROR] CLIPSegToBboxDetector: CLIPSeg custom node isn't installed. You must install biegert/ComfyUI-CLIPSeg extension to use this node.")
-            raise Exception("[ERROR] CLIPSegToBboxDetector: CLIPSeg custom node isn't installed. You must install biegert/ComfyUI-CLIPSeg extension to use this node.")
+            try:
+                return (core.OptimizedBBoxDetectorBasedOnCLIPSeg(text, blur, threshold, dilation_factor), )
+            except ImportError as e:
+                logging.error(f"[ERROR] CLIPSegDetectorProvider: transformers library not installed. {str(e)}")
+                if "CLIPSeg" in nodes.NODE_CLASS_MAPPINGS:
+                    logging.warning("[WARNING] Falling back to legacy CLIPSeg implementation (slower)")
+                    return (core.BBoxDetectorBasedOnCLIPSeg(text, blur, threshold, dilation_factor), )
+                else:
+                    raise Exception("[ERROR] Neither optimized nor legacy CLIPSeg implementation is available. Install transformers library or biegert/ComfyUI-CLIPSeg extension.")
 
 
 sam2_config_table = {
@@ -171,15 +183,15 @@ class SAMLoader:
         # Unless user explicitly wants to use CPU, we use GPU
         device = comfy.model_management.get_torch_device() if device_mode == "Prefer GPU" else "CPU"
 
-        if device_mode == "Prefer GPU":
-            safe_to.to_device(sam, device)
-
         is_auto_mode = device_mode == "AUTO"
 
         if model_kind == 'sam2':
             sam = core.SAM2Wrapper(config=config, modelname=modelname, is_auto_mode=is_auto_mode, safe_to_gpu=safe_to, device_mode=device_mode)
             logging.info(f"Loads SAM2 model: {modelname} (device:{device_mode})")
         else:
+            if device_mode == "Prefer GPU":
+                safe_to.to_device(sam, device)
+            
             sam_obj = core.SAMWrapper(sam, is_auto_mode=is_auto_mode, safe_to_gpu=safe_to)
             sam.sam_wrapper = sam_obj
             logging.info(f"Loads SAM model: {modelname} (device:{device_mode})")

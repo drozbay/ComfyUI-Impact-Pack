@@ -2231,6 +2231,106 @@ class PixelTiledKSampleUpscaler:
         return refined_latent
 
 
+# CLIPSeg implementation based on ComfyUI_Essentials
+# https://github.com/cubiq/ComfyUI_essentials/blob/main/segmentation.py
+class OptimizedCLIPSegModelCache:
+    _instance = None
+    _processor = None
+    _model = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(OptimizedCLIPSegModelCache, cls).__new__(cls)
+        return cls._instance
+    
+    def get_model(self):
+        if self._processor is None or self._model is None:
+            try:
+                from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
+                logging.info("[Impact Pack] Loading CLIPSeg model...")
+                self._processor = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
+                self._model = CLIPSegForImageSegmentation.from_pretrained("CIDAS/clipseg-rd64-refined")
+                logging.info("[Impact Pack] CLIPSeg model loaded and cached successfully")
+            except ImportError:
+                logging.error("[Impact Pack] transformers library not installed. Please install it to use CLIPSeg.")
+                raise Exception("transformers library required for CLIPSeg. Install with: pip install transformers")
+        return self._processor, self._model
+    
+    def clear_cache(self):
+        self._processor = None
+        self._model = None
+
+class OptimizedBBoxDetectorBasedOnCLIPSeg:
+    
+    def __init__(self, prompt, blur, threshold, dilation_factor):
+        self.prompt = prompt
+        self.blur = blur
+        self.threshold = threshold
+        self.dilation_factor = dilation_factor
+        self.aux = None
+        self.model_cache = OptimizedCLIPSegModelCache()
+    
+    def detect(self, image, bbox_threshold, bbox_dilation, bbox_crop_factor, drop_size=1, detailer_hook=None):
+        mask = self.detect_combined(image, bbox_threshold, bbox_dilation)
+        mask = utils.make_2d_mask(mask)
+        segs = mask_to_segs(mask, False, bbox_crop_factor, True, drop_size, detailer_hook=detailer_hook)
+        
+        if detailer_hook is not None and hasattr(detailer_hook, "post_detection"):
+            segs = detailer_hook.post_detection(segs)
+        
+        return segs
+    
+    def detect_combined(self, image, bbox_threshold, bbox_dilation):
+        import torchvision.transforms.v2 as T
+        from scipy.ndimage import gaussian_filter
+        
+        processor, model = self.model_cache.get_model()
+        
+        threshold = self.threshold if self.threshold is not None else bbox_threshold
+        dilation_factor = self.dilation_factor if self.dilation_factor is not None else bbox_dilation
+        prompt = self.aux if self.prompt == '' and self.aux is not None else self.prompt
+        
+        if len(image.shape) == 4:
+            image = image[0]
+        
+        # Convert to numpy array with shape (H, W, C)
+        imagenp = image.mul(255).clamp(0, 255).byte().cpu().numpy()
+        
+        inputs = processor(text=prompt, images=[imagenp], return_tensors="pt")
+        
+        with torch.no_grad():
+            outputs = model(**inputs)
+        
+        mask = outputs.logits.unsqueeze(1)
+        mask = torch.sigmoid(mask[0][0])
+        
+        mask = (mask > threshold).float()
+        
+        if self.blur > 0:
+            mask_np = mask.cpu().numpy()
+            mask_np = gaussian_filter(mask_np, sigma=self.blur)
+            mask = torch.from_numpy(mask_np)
+        
+        if dilation_factor > 0:
+            kernel_size = int(dilation_factor * 2) + 1
+            kernel = torch.ones((1, 1, kernel_size, kernel_size))
+            mask = mask.unsqueeze(0).unsqueeze(0)
+            mask = F.conv2d(mask, kernel, padding=kernel_size//2)
+            mask = (mask > 0).float()
+            mask = mask.squeeze(0).squeeze(0)
+        
+        mask = mask.unsqueeze(0).unsqueeze(0)
+        # image shape is now (H, W, C)
+        mask = F.interpolate(mask, size=(image.shape[0], image.shape[1]), mode='bilinear', align_corners=False)
+        mask = mask.squeeze(0).squeeze(0)
+        
+        mask = utils.to_binary_mask(mask)
+        return mask
+    
+    def setAux(self, x):
+        self.aux = x
+
+
 # REQUIREMENTS: biegert/ComfyUI-CLIPSeg
 class BBoxDetectorBasedOnCLIPSeg:
     prompt = None
