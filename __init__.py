@@ -218,6 +218,7 @@ NODE_CLASS_MAPPINGS = {
     "ImpactSEGSConcat": SEGSConcat, # noqa: F405
     "ImpactSEGSPicker": SEGSPicker, # noqa: F405
     "ImpactMakeTileSEGS": MakeTileSEGS, # noqa: F405
+    "ImpactMakeTileSEGSForVideo": MakeTileSEGSForVideo, # noqa: F405
     "ImpactSEGSMerge": SEGSMerge, # noqa: F405
 
     "SEGSDetailerForAnimateDiff": SEGSDetailerForAnimateDiff, # noqa: F405
@@ -374,6 +375,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ImpactSEGSToMaskBatch": "SEGS to Mask Batch",
     "ImpactSEGSPicker": "Picker (SEGS)",
     "ImpactMakeTileSEGS": "Make Tile SEGS",
+    "ImpactMakeTileSEGSForVideo": "Make Tile SEGS (Video)",
     "ImpactSEGSMerge": "SEGS Merge",
 
     "ImpactDecomposeSEGS": "Decompose (SEGS)",

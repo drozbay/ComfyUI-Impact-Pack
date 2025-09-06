@@ -1500,13 +1500,45 @@ def segs_to_combined_mask(segs):
     shape = segs[0]
     h = shape[0]
     w = shape[1]
+    
+    # Check if any seg has a temporal mask to determine output dimensions
+    has_temporal = False
+    num_frames = 1
+    for seg in segs[1]:
+        if seg.cropped_mask is not None:
+            cropped_mask = seg.cropped_mask
+            if isinstance(cropped_mask, torch.Tensor):
+                cropped_mask = cropped_mask.cpu().numpy()
+            if len(cropped_mask.shape) == 3:  # Temporal mask
+                has_temporal = True
+                num_frames = max(num_frames, cropped_mask.shape[0])
+                break
 
-    mask = np.zeros((h, w), dtype=np.uint8)
+    # Create appropriate mask shape
+    if has_temporal:
+        mask = np.zeros((num_frames, h, w), dtype=np.uint8)
+    else:
+        mask = np.zeros((h, w), dtype=np.uint8)
 
     for seg in segs[1]:
         cropped_mask = seg.cropped_mask
         crop_region = seg.crop_region
-        mask[crop_region[1]:crop_region[3], crop_region[0]:crop_region[2]] |= (cropped_mask * 255).astype(np.uint8)
+        
+        # Convert to numpy if it's a tensor
+        if isinstance(cropped_mask, torch.Tensor):
+            cropped_mask = cropped_mask.cpu().numpy()
+        
+        # Handle temporal masks
+        if has_temporal:
+            if len(cropped_mask.shape) == 3:  # Temporal cropped mask
+                # Apply to each frame
+                for f in range(cropped_mask.shape[0]):
+                    mask[f, crop_region[1]:crop_region[3], crop_region[0]:crop_region[2]] |= (cropped_mask[f] * 255).astype(np.uint8)
+            else:  # 2D mask, broadcast to all frames
+                for f in range(num_frames):
+                    mask[f, crop_region[1]:crop_region[3], crop_region[0]:crop_region[2]] |= (cropped_mask * 255).astype(np.uint8)
+        else:
+            mask[crop_region[1]:crop_region[3], crop_region[0]:crop_region[2]] |= (cropped_mask * 255).astype(np.uint8)
 
     return torch.from_numpy(mask.astype(np.float32) / 255.0)
 
