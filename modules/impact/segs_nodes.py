@@ -332,9 +332,15 @@ class SEGSPreview:
 
         if len(segs[1]) > 0:
             if segs[1][0].cropped_image is not None:
-                batch_count = len(segs[1][0].cropped_image)
+                if len(segs[1][0].cropped_image.shape) == 4:
+                    batch_count = 1
+                else:
+                    batch_count = len(segs[1][0].cropped_image)
             elif fallback_image_opt is not None:
-                batch_count = len(fallback_image_opt)
+                if len(fallback_image_opt.shape) == 4:
+                    batch_count = 1
+                else:
+                    batch_count = len(fallback_image_opt)
             else:
                 return {"ui": {"images": results}}
 
@@ -353,10 +359,14 @@ class SEGSPreview:
                         else:
                             masks = seg.cropped_mask
 
-                        cached_mask = (masks[0] * 255).to(torch.uint8)
-                        for x in masks[1:]:
-                            cached_mask |= (x * 255).to(torch.uint8)
-                        cached_mask = (cached_mask/255.0).to(torch.float32)
+                        if len(masks.shape) == 3:
+                            # Video mask: just use first frame
+                            cached_mask = masks[0]
+                        else:
+                            cached_mask = (masks[0] * 255).to(torch.uint8)
+                            for x in masks[1:]:
+                                cached_mask |= (x * 255).to(torch.uint8)
+                            cached_mask = (cached_mask/255.0).to(torch.float32)
                         cached_mask = utils.to_binary_mask(cached_mask, 0.1)
                         cached_mask = cached_mask.numpy()
 
@@ -380,10 +390,15 @@ class SEGSPreview:
                     cropped_image = None
 
                     if seg.cropped_image is not None:
-                        cropped_image = seg.cropped_image[i, None]
+                        if len(seg.cropped_image.shape) == 4 and seg.cropped_image.shape[0] > 1:
+                            cropped_image = seg.cropped_image[0:1]
+                        else:
+                            cropped_image = seg.cropped_image[i, None]
                     elif fallback_image_opt is not None:
-                        # take from original image
-                        ref_image = fallback_image_opt[i].unsqueeze(0)
+                        if len(fallback_image_opt.shape) == 4:
+                            ref_image = fallback_image_opt[0].unsqueeze(0)
+                        else:
+                            ref_image = fallback_image_opt[i].unsqueeze(0)
                         cropped_image = utils.crop_image(ref_image, seg.crop_region)
 
                     if cropped_image is not None:
@@ -395,9 +410,14 @@ class SEGSPreview:
 
                         if alpha_mode:
                             if isinstance(seg.cropped_mask, np.ndarray):
-                                cropped_mask = seg.cropped_mask
+                                if len(seg.cropped_mask.shape) == 3:
+                                    cropped_mask = seg.cropped_mask[0]
+                                else:
+                                    cropped_mask = seg.cropped_mask
                             else:
-                                if seg.cropped_image is not None and len(seg.cropped_image) != len(seg.cropped_mask):
+                                if len(seg.cropped_mask.shape) == 3 and seg.cropped_mask.shape[0] > 1:
+                                    cropped_mask = seg.cropped_mask[0].numpy()
+                                elif seg.cropped_image is not None and len(seg.cropped_image) != len(seg.cropped_mask):
                                     cropped_mask = get_combined_mask()
                                 else:
                                     cropped_mask = seg.cropped_mask[i].numpy()
