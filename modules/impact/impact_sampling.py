@@ -19,6 +19,41 @@ except Exception:
     raise Exception("[Impact Pack] ComfyUI is an outdated version.")
 
 
+def _pad_for_patch_size(model, latent_image, noise):
+    try:
+        if hasattr(model, 'model') and hasattr(model.model, 'diffusion_model'):
+            diffusion_model = model.model.diffusion_model
+            if hasattr(diffusion_model, 'patch_size'):
+                patch_size = diffusion_model.patch_size
+                
+                if isinstance(patch_size, (tuple, list)) and len(patch_size) >= 2:
+                    patch_h, patch_w = patch_size[-2], patch_size[-1]
+                else:
+                    return latent_image
+                
+                # Calculate padding needed
+                h, w = latent_image.shape[-2:]
+                pad_h = (patch_h - h % patch_h) % patch_h
+                pad_w = (patch_w - w % patch_w) % patch_w
+                
+                if pad_h > 0 or pad_w > 0:
+                    latent_image = torch.nn.functional.pad(
+                        latent_image,
+                        (0, pad_w, 0, pad_h),
+                        mode='reflect'
+                    )
+                    if noise is not None:
+                        noise = torch.nn.functional.pad(
+                            noise,
+                            (0, pad_w, 0, pad_h),
+                            mode='reflect'
+                        )
+    except:
+        pass
+
+    return latent_image, noise
+
+
 def calculate_sigmas(model, sampler, scheduler, steps):
     discard_penultimate_sigma = False
     if sampler in ['dpm_2', 'dpm_2_ancestral', 'uni_pc', 'uni_pc_bh2']:
@@ -123,9 +158,18 @@ def sample_with_custom_noise(model, add_noise, noise_seed, cfg, positive, negati
         # guider = comfy.samplers.CFGGuider(model)
         # guider.set_conds(positive, negative)
         # guider.set_cfg(cfg)
+        
+        # Pad latent if needed for model's patch_size
+        original_shape = latent_image.shape
+        latent_image, noise = _pad_for_patch_size(model, latent_image, noise)
+        
         samples = comfy.sample.sample_custom(model, noise, cfg, sampler, sigmas, positive, negative, latent_image,
                                              noise_mask=noise_mask, callback=touched_callback,
                                              disable_pbar=disable_pbar, seed=noise_seed)
+        
+        # Crop back to original size if padded (maybe want to skip this)
+        if samples.shape != original_shape:
+            samples = samples[:, :, :original_shape[-2], :original_shape[-1]]
     else:
         guider = nodes_custom_sampler.Guider_Basic(model)
         positive = node_helpers.conditioning_set_values(positive, {"guidance": cfg})
