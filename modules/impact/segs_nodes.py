@@ -1551,65 +1551,6 @@ class ControlNetApplyAdvancedSEGS:
         return ((segs[0], new_segs), )
 
 
-class VACEApplySEGS:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "segs": ("SEGS",),
-                "positive": ("CONDITIONING",),
-                "negative": ("CONDITIONING",),
-            },
-            "optional": {
-                "composite_both_channels": ("BOOLEAN", {"default": True, "label_on": "True", "label_off": "False"}),
-            }
-        }
-    
-    RETURN_TYPES = ("SEGS", "CONDITIONING", "CONDITIONING")
-    RETURN_NAMES = ("segs", "positive", "negative")
-    FUNCTION = "doit"
-    CATEGORY = "ImpactPack/Util"
-    DESCRIPTION = "Applies VACE embeddings from conditioning to SEGS for proper spatial alignment during detailing"
-    
-    @staticmethod
-    def doit(segs, positive, negative, composite_both_channels=True):
-        vace_frames = None
-        vace_masks = None
-        vace_strength = None
-        
-        # Check positive conditioning for VACE data
-        if positive and len(positive) > 0:
-            cond_dict = positive[0][1]
-            vace_frames = cond_dict.get("vace_frames", None)
-            vace_masks = cond_dict.get("vace_mask", None)
-            vace_strength = cond_dict.get("vace_strength", None)
-        
-        if vace_frames is None:
-            return (segs, positive, negative)
-        
-        # Create new SEGS with VACEWrapper attached
-        new_segs = []
-        original_size = segs[0]  # (h, w)
-        
-        for seg in segs[1]:
-            # Create wrapper for this SEG's crop region
-            vace_wrapper = core.VACEWrapper(
-                vace_frames, vace_masks, vace_strength,
-                original_size, seg.crop_region,
-                seg_mask=seg.cropped_mask,
-                prev_wrapper=seg.control_net_wrapper,
-                composite_both_channels=composite_both_channels
-            )
-            
-            new_seg = SEG(
-                seg.cropped_image, seg.cropped_mask, seg.confidence,
-                seg.crop_region, seg.bbox, seg.label, vace_wrapper
-            )
-            new_segs.append(new_seg)
-        
-        return ((original_size, new_segs), positive, negative)
-
-
 class ControlNetClearSEGS:
     @classmethod
     def INPUT_TYPES(s):
