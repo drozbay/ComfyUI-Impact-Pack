@@ -315,6 +315,10 @@ class DetailerForEach:
         if not (isinstance(model, str) and model == "DUMMY") and noise_mask_feather > 0 and 'denoise_mask_function' not in model.model_options:
             model = nodes_differential_diffusion.DifferentialDiffusion().execute(model)[0]
 
+        # Reset any stateful hooks before processing SEGS batch
+        if detailer_hook is not None:
+            detailer_hook.reset_hook_state()
+
         for i, seg in enumerate(ordered_segs):
             cropped_image = utils.crop_ndarray4(image.cpu().numpy(), seg.crop_region)  # Never use seg.cropped_image to handle overlapping area
             cropped_image = utils.to_tensor(cropped_image)
@@ -531,6 +535,10 @@ class DetailerForEachAutoRetry:
 
         if not (isinstance(model, str) and model == "DUMMY") and noise_mask_feather > 0 and 'denoise_mask_function' not in model.model_options:
             model = nodes_differential_diffusion.DifferentialDiffusion().execute(model)[0]
+
+        # Reset any stateful hooks before processing SEGS batch
+        if detailer_hook is not None:
+            detailer_hook.reset_hook_state()
 
         for i, seg in enumerate(ordered_segs):
             cropped_image = utils.crop_ndarray4(image.cpu().numpy(), seg.crop_region)  # Never use seg.cropped_image to handle overlapping area

@@ -121,6 +121,10 @@ class DetailerHookCombine(PixelKSampleHookCombine):
     
     def should_retry_patch(self, patch):
         return self.hook1.should_retry_patch(patch) or self.hook2.should_retry_patch(patch)
+    
+    def reset_hook_state(self):
+        self.hook1.reset_hook_state()
+        self.hook2.reset_hook_state()
 
 
 class SimpleCfgScheduleHook(PixelKSampleHook):
@@ -194,6 +198,9 @@ class DetailerHook(PixelKSampleHook):
     
     def should_retry_patch(self, patch):
         return False
+    
+    def reset_hook_state(self):
+        pass
 
 
 class CustomSamplerDetailerHookProvider(DetailerHook):
