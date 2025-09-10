@@ -1954,70 +1954,68 @@ class MakeTileSEGSForVideo:
                 crop_region = utils.make_crop_region(iw, ih, bbox, crop_factor)
                 cx1, cy1, cx2, cy2 = crop_region
 
+                crop_w = cx2 - cx1  
+                crop_h = cy2 - cy1
+
                 if has_temporal:
                     mask = np.zeros((num_frames, cy2 - cy1, cx2 - cx1)).astype(np.float32)
                 else:
                     mask = np.zeros((cy2 - cy1, cx2 - cx1)).astype(np.float32)
-
-                rel_left = x1 - cx1
-                rel_top = y1 - cy1
-                rel_right = x2 - cx1
-                rel_bot = y2 - cy1
 
                 if has_temporal:
                     # Apply mask generation per frame
                     for f in range(num_frames):
                         if mask_irregularity > 0:
                             if mask_cache is not None:
-                                core.adaptive_mask_paste(mask[f], mask_cache, (rel_left, rel_top, rel_right, rel_bot))
+                                core.adaptive_mask_paste(mask[f], mask_cache, (0, 0, crop_w, crop_h))
                             else:
-                                core.random_mask(mask[f], (rel_left, rel_top, rel_right, rel_bot), factor=mask_irregularity, size=mask_quality)
+                                core.random_mask(mask[f], (0, 0, crop_w, crop_h), factor=mask_irregularity, size=mask_quality)
 
-                            # corner filling for this frame
-                            if rel_left == 0:
-                                pad = int((x2 - x1) / 8)
-                                mask[f, rel_top:rel_bot, :pad] = 1.0
+                            # Corner filling for edge tiles
+                            if x1 == 0:
+                                pad = int(crop_w / 16)
+                                mask[f, :, :pad] = 1.0
 
-                            if rel_top == 0:
-                                pad = int((y2 - y1) / 8)
-                                mask[f, :pad, rel_left:rel_right] = 1.0
+                            if y1 == 0:
+                                pad = int(crop_h / 16)
+                                mask[f, :pad, :] = 1.0
 
-                            if rel_right == mask.shape[2]:  # Width is dim 2 for temporal
-                                pad = int((x2 - x1) / 8)
-                                mask[f, rel_top:rel_bot, -pad:] = 1.0
+                            if x2 >= iw:
+                                pad = int(crop_w / 16)
+                                mask[f, :, -pad:] = 1.0
 
-                            if rel_bot == mask.shape[1]:  # Height is dim 1 for temporal
-                                pad = int((y2 - y1) / 8)
-                                mask[f, -pad:, rel_left:rel_right] = 1.0
+                            if y2 >= ih:
+                                pad = int(crop_h / 16)
+                                mask[f, -pad:, :] = 1.0
                         else:
-                            mask[f, rel_top:rel_bot, rel_left:rel_right] = 1.0
+                            mask[f, :, :] = 1.0
                 else:
-                    # Original 2D logic
                     if mask_irregularity > 0:
                         if mask_cache is not None:
-                            core.adaptive_mask_paste(mask, mask_cache, (rel_left, rel_top, rel_right, rel_bot))
+                            core.adaptive_mask_paste(mask, mask_cache, (0, 0, crop_w, crop_h))
                         else:
-                            core.random_mask(mask, (rel_left, rel_top, rel_right, rel_bot), factor=mask_irregularity, size=mask_quality)
+                            core.random_mask(mask, (0, 0, crop_w, crop_h), factor=mask_irregularity, size=mask_quality)
 
-                        # corner filling
-                        if rel_left == 0:
-                            pad = int((x2 - x1) / 8)
-                            mask[rel_top:rel_bot, :pad] = 1.0
+                        # Corner filling for edge tiles
+                        if x1 == 0:
+                            pad = int(crop_w / 16)
+                            mask[:, :pad] = 1.0
 
-                        if rel_top == 0:
-                            pad = int((y2 - y1) / 8)
-                            mask[:pad, rel_left:rel_right] = 1.0
+                        if y1 == 0:
+                            pad = int(crop_h / 16)
+                            mask[:pad, :] = 1.0
 
-                        if rel_right == mask.shape[1]:
-                            pad = int((x2 - x1) / 8)
-                            mask[rel_top:rel_bot, -pad:] = 1.0
+                        if x2 >= iw:
+                            pad = int(crop_w / 16)
+                            mask[:, -pad:] = 1.0
 
-                        if rel_bot == mask.shape[0]:
-                            pad = int((y2 - y1) / 8)
-                            mask[-pad:, rel_left:rel_right] = 1.0
+                        if y2 >= ih:
+                            pad = int(crop_h / 16)
+                            mask[-pad:, :] = 1.0
                     else:
-                        mask[rel_top:rel_bot, rel_left:rel_right] = 1.0
+                        mask[:, :] = 1.0
 
+                
                 mask = torch.tensor(mask)
 
                 if exclusion_mask is not None:
