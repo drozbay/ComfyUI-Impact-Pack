@@ -12,6 +12,7 @@ from . import segs_upscaler
 from comfy.cli_args import args
 import math
 from PIL import Image
+import math
 import comfy
 import numpy as np
 import torch
@@ -26,6 +27,71 @@ try:
 except Exception:
     logging.info("\n#############################################\n[Impact Pack] ComfyUI is an outdated version.\n#############################################\n")
     raise Exception("[Impact Pack] ComfyUI is an outdated version.")
+
+
+def create_trapezoidal_corner_mask(height, width, edge_type='left', is_3d=False, frames=1, slope_angle=45):
+    if is_3d:
+        mask = np.zeros((frames, height, width), dtype=np.float32)
+        # Create 2D trapezoid and broadcast to all frames
+        trapezoid_2d = create_trapezoidal_corner_mask(height, width, edge_type, is_3d=False, slope_angle=slope_angle)
+        for f in range(frames):
+            mask[f] = trapezoid_2d
+        return mask
+
+    if slope_angle < 0:
+        opposites = {'left': 'right', 'right': 'left', 'top': 'bottom', 'bottom': 'top'}
+        edge_type = opposites[edge_type]
+        slope_angle = abs(slope_angle)
+        
+    mask = np.ones((height, width), dtype=np.float32)
+    
+    slope_rad = math.radians(slope_angle)
+    
+    if slope_angle == 90:
+        tan_slope = float('inf')
+    else:
+        tan_slope = math.tan(slope_rad)
+
+    if tan_slope == 0: # For 0-degree angle, no tapering needed.
+        return np.zeros((height, width), dtype=np.float32) if edge_type in ['left', 'right'] and width > 0 or edge_type in ['top', 'bottom'] and height > 0 else mask
+
+    if edge_type == 'left':
+        for y in range(height):
+            dist_from_edge = min(y, height - 1 - y)
+            taper_offset = dist_from_edge / tan_slope
+            
+            for x in range(width):
+                if x >= taper_offset:
+                    mask[y, x] = 0.0
+
+    elif edge_type == 'right':
+        for y in range(height):
+            dist_from_edge = min(y, height - 1 - y)
+            taper_offset = dist_from_edge / tan_slope
+            
+            for x in range(width):
+                if x < width - taper_offset:
+                    mask[y, x] = 0.0
+
+    elif edge_type == 'top':
+        for x in range(width):
+            dist_from_edge = min(x, width - 1 - x)
+            taper_offset = dist_from_edge / tan_slope
+
+            for y in range(height):
+                if y >= taper_offset:
+                    mask[y, x] = 0.0
+
+    elif edge_type == 'bottom':
+        for x in range(width):
+            dist_from_edge = min(x, width - 1 - x)
+            taper_offset = dist_from_edge / tan_slope
+
+            for y in range(height):
+                if y < height - taper_offset:
+                    mask[y, x] = 0.0
+
+    return mask
 
 
 class SEGSDetailer:
@@ -1741,13 +1807,14 @@ class MakeTileSEGSForVideo:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
-                     "images": ("IMAGE", ),
-                     "bbox_size": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 8}),
-                     "crop_factor": ("FLOAT", {"default": 3.0, "min": 1.0, "max": 10, "step": 0.01}),
-                     "min_overlap": ("INT", {"default": 5, "min": 0, "max": 512, "step": 1}),
-                     "filter_segs_dilation": ("INT", {"default": 20, "min": -255, "max": 255, "step": 1}),
-                     "mask_irregularity": ("FLOAT", {"default": 0, "min": 0, "max": 1.0, "step": 0.01}),
-                     "irregular_mask_mode": (["Reuse fast", "Reuse quality", "All random fast", "All random quality"],)
+                    "images": ("IMAGE", ),  # Can be single image or video frames
+                    "bbox_size": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 8}),
+                    "crop_factor": ("FLOAT", {"default": 3.0, "min": 1.0, "max": 10, "step": 0.01}),
+                    "min_overlap": ("INT", {"default": 5, "min": 0, "max": 512, "step": 1}),
+                    "filter_segs_dilation": ("INT", {"default": 20, "min": -255, "max": 255, "step": 1}),
+                    "mask_irregularity": ("FLOAT", {"default": 0, "min": 0, "max": 1.0, "step": 0.01}),
+                    "irregular_mask_mode": (["Reuse fast", "Reuse quality", "All random fast", "All random quality", "Noisy mask static", "Noisy mask dynamic"],),
+                    "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                     },
                 "optional": {
                     "filter_in_segs_opt": ("SEGS", ),
@@ -1761,32 +1828,75 @@ class MakeTileSEGSForVideo:
 
     CATEGORY = "ImpactPack/__for_testing"
 
+    DESCRIPTION = "Creates tile segments for video frames."
+
     @staticmethod
-    def doit(images, bbox_size, crop_factor, min_overlap, filter_segs_dilation, mask_irregularity=0, irregular_mask_mode="Reuse fast", filter_in_segs_opt=None, filter_out_segs_opt=None):
+    def doit(images, bbox_size, crop_factor, min_overlap,
+             filter_segs_dilation,
+             seed,
+             mask_irregularity=0, irregular_mask_mode="Reuse fast", edge_slope_angle=5,
+             filter_in_segs_opt=None, filter_out_segs_opt=None):
+        rng = np.random.RandomState(seed)
         if bbox_size <= 2*min_overlap:
             new_min_overlap = bbox_size / 2
-            logging.info(f"[MakeTileSEGS] min_overlap should be greater than bbox_size. (value changed: {min_overlap} => {new_min_overlap})")
+            logging.info(f"[MakeTileSEGSForVideo] min_overlap should be greater than bbox_size. (value changed: {min_overlap} => {new_min_overlap})")
             min_overlap = new_min_overlap
 
-        if len(images.shape) == 4:
-            batch_size, ih, iw, _ = images.shape
-        else:
-            ih, iw, _ = images.shape
-            batch_size = 1
+        batch_size, ih, iw, channels = images.shape
+
+        if batch_size > 1:
+            logging.info(f"[MakeTileSEGSForVideo] Processing video with {batch_size} frames")
+
+        def debug_filter_segs(filter_segs, name):
+            if filter_segs is not None:
+                logging.info(f"[MakeTileSEGSForVideo] DEBUG {name}: Found {len(filter_segs[1])} SEG elements")
+                for i, seg in enumerate(filter_segs[1]):
+                    if seg.cropped_mask is not None:
+                        mask = seg.cropped_mask
+                        mask_type = type(mask).__name__
+                        mask_shape = mask.shape if hasattr(mask, 'shape') else 'no shape'
+                        mask_dtype = mask.dtype if hasattr(mask, 'dtype') else 'no dtype'
+                        logging.info(f"[MakeTileSEGSForVideo] DEBUG {name}[{i}] mask: type={mask_type}, shape={mask_shape}, dtype={mask_dtype}")
+                    else:
+                        logging.info(f"[MakeTileSEGSForVideo] DEBUG {name}[{i}] mask: None")
+
+        debug_filter_segs(filter_out_segs_opt, "filter_out_segs")
+        debug_filter_segs(filter_in_segs_opt, "filter_in_segs")
+
+        debug_counter = [0]
+        def debug_output_mask(mask_numpy):
+            debug_counter[0] += 1
+            logging.info(f"output mask #{debug_counter[0]}: type={type(mask_numpy).__name__}, shape={mask_numpy.shape}, dtype={mask_numpy.dtype}")
 
         mask_cache = None
         mask_quality = 512
+        fast = False
         if mask_irregularity > 0:
             if irregular_mask_mode == "Reuse fast":
                 mask_quality = 128
-                mask_cache = np.zeros((128, 128)).astype(np.float32)
-                core.random_mask(mask_cache, (0, 0, 128, 128), factor=mask_irregularity, size=mask_quality)
+                mask_cache = np.zeros((mask_quality, mask_quality)).astype(np.float32)
+                core.random_mask(mask_cache, (0, 0, mask_quality, mask_quality), factor=mask_irregularity, size=mask_quality, fast=fast, seed=seed)
             elif irregular_mask_mode == "Reuse quality":
                 mask_quality = 512
-                mask_cache = np.zeros((512, 512)).astype(np.float32)
-                core.random_mask(mask_cache, (0, 0, 512, 512), factor=mask_irregularity, size=mask_quality)
+                mask_cache = np.zeros((mask_quality, mask_quality)).astype(np.float32)
+                core.random_mask(mask_cache, (0, 0, mask_quality, mask_quality), factor=mask_irregularity, size=mask_quality, fast=fast, seed=seed)
             elif irregular_mask_mode == "All random fast":
+                mask_quality = 128
+            elif irregular_mask_mode == "All random quality":
                 mask_quality = 512
+            elif irregular_mask_mode.startswith("Noisy mask"):
+                mask_quality = 512
+                fast = True
+                if not torch.cuda.is_available():
+                    raise Exception("MakeTileSEGSForVideoV: 'Noisy mask' mode needs CUDA environment.")
+                dynamic_mask = irregular_mask_mode.endswith("dynamic")
+                if dynamic_mask and batch_size > 1:
+                    mask_cache = np.zeros((batch_size, mask_quality, mask_quality)).astype(np.float32)
+                    for f in range(batch_size):
+                        core.random_mask(mask_cache[f], (0, 0, mask_quality, mask_quality), factor=mask_irregularity, fast=fast, seed=seed+f)
+                else: # static mask
+                    mask_cache = np.zeros((mask_quality, mask_quality)).astype(np.float32)
+                    core.random_mask(mask_cache, (0, 0, mask_quality, mask_quality), factor=mask_irregularity, fast=fast, seed=seed)
 
         # compensate overlap/bbox_size for irregular mask
         if mask_irregularity > 0:
@@ -1799,9 +1909,7 @@ class MakeTileSEGSForVideo:
             exclusion_mask = core.segs_to_combined_mask(filter_out_segs_opt)
             exclusion_mask = utils.make_3d_mask(exclusion_mask)
             exclusion_mask = utils.resize_mask(exclusion_mask, (ih, iw))
-            dilated = utils.dilate_mask(exclusion_mask, filter_segs_dilation)
-            # dilate_mask returns tensor for 3D masks, numpy for 2D
-            exclusion_mask = dilated.numpy() if isinstance(dilated, torch.Tensor) else dilated
+            exclusion_mask = utils.dilate_mask(exclusion_mask.cpu().numpy(), filter_segs_dilation)
         else:
             exclusion_mask = None
 
@@ -1809,30 +1917,20 @@ class MakeTileSEGSForVideo:
             and_mask = core.segs_to_combined_mask(filter_in_segs_opt)
             and_mask = utils.make_3d_mask(and_mask)
             and_mask = utils.resize_mask(and_mask, (ih, iw))
-            dilated = utils.dilate_mask(and_mask, filter_segs_dilation)
-            # dilate_mask returns tensor for 3D masks, numpy for 2D
-            and_mask = dilated.numpy() if isinstance(dilated, torch.Tensor) else dilated
-        
-        # Detect if we're dealing with temporal masks
-        has_temporal = False
-        num_frames = 1
-        if exclusion_mask is not None and len(exclusion_mask.shape) == 3:
-            has_temporal = True
-            num_frames = exclusion_mask.shape[0]
-        elif and_mask is not None and len(and_mask.shape) == 3:
-            has_temporal = True
-            num_frames = and_mask.shape[0]
+            and_mask = utils.dilate_mask(and_mask.cpu().numpy(), filter_segs_dilation)
 
-        if filter_in_segs_opt is not None:
-            if has_temporal and len(and_mask.shape) == 3:
-                first_frame_mask = and_mask[0]
-                a, b = core.mask_to_segs(first_frame_mask, True, 1.0, False, 0)
+            if len(and_mask.shape) == 3:
+                # Project all frames
+                temporal_projection = np.max(and_mask, axis=0)
             else:
-                a, b = core.mask_to_segs(and_mask, True, 1.0, False, 0)
+                temporal_projection = and_mask
+
+            a, b = core.mask_to_segs(temporal_projection, True, 1.0, False, 0)
             if len(b) == 0:
                 return ((a, b),)
 
             start_x, start_y, c, d = b[0].crop_region
+
             w = c - start_x
             h = d - start_y
         else:
@@ -1844,7 +1942,7 @@ class MakeTileSEGSForVideo:
         # calculate tile factors
         if bbox_size > h or bbox_size > w:
             new_bbox_size = min(bbox_size, min(w, h))
-            logging.info(f"[MaskTileSEGS] bbox_size is greater than resolution (value changed: {bbox_size} => {new_bbox_size}")
+            logging.info(f"[MakeTileSEGSForVideo] bbox_size is greater than resolution (value changed: {bbox_size} => {new_bbox_size}")
             bbox_size = new_bbox_size
 
         n_horizontal = math.ceil(w / (bbox_size - min_overlap))
@@ -1895,101 +1993,152 @@ class MakeTileSEGSForVideo:
                 crop_region = utils.make_crop_region(iw, ih, bbox, crop_factor)
                 cx1, cy1, cx2, cy2 = crop_region
 
-                crop_w = cx2 - cx1  
-                crop_h = cy2 - cy1
-
-                if has_temporal:
-                    mask = np.zeros((num_frames, cy2 - cy1, cx2 - cx1)).astype(np.float32)
+                # Create mask matching input temporal dimensions
+                if batch_size > 1:
+                    # 3D temporal mask: [frameks, height, width]
+                    mask = np.zeros((batch_size, cy2 - cy1, cx2 - cx1)).astype(np.float32)
                 else:
+                    # 2D mask for single image
                     mask = np.zeros((cy2 - cy1, cx2 - cx1)).astype(np.float32)
 
-                if has_temporal:
-                    # Apply mask generation per frame
-                    for f in range(num_frames):
-                        if mask_irregularity > 0:
-                            if mask_cache is not None:
-                                core.adaptive_mask_paste(mask[f], mask_cache, (0, 0, crop_w, crop_h))
-                            else:
-                                core.random_mask(mask[f], (0, 0, crop_w, crop_h), factor=mask_irregularity, size=mask_quality)
+                rel_left = x1 - cx1
+                rel_top = y1 - cy1
+                rel_right = x2 - cx1
+                rel_bot = y2 - cy1
 
-                            # Corner filling for edge tiles
-                            if x1 == 0:
-                                pad = int(crop_w / 16)
-                                mask[f, :, :pad] = 1.0
-
-                            if y1 == 0:
-                                pad = int(crop_h / 16)
-                                mask[f, :pad, :] = 1.0
-
-                            if x2 >= iw:
-                                pad = int(crop_w / 16)
-                                mask[f, :, -pad:] = 1.0
-
-                            if y2 >= ih:
-                                pad = int(crop_h / 16)
-                                mask[f, -pad:, :] = 1.0
-                        else:
-                            mask[f, :, :] = 1.0
-                else:
-                    if mask_irregularity > 0:
+                if mask_irregularity > 0:
+                    if batch_size > 1:
+                        # Handle 3D temporal masks - apply to all frames
                         if mask_cache is not None:
-                            core.adaptive_mask_paste(mask, mask_cache, (0, 0, crop_w, crop_h))
+                            for frame_idx in range(batch_size):
+                                if len(mask_cache.shape) == 3:
+                                    core.adaptive_mask_paste(mask[frame_idx], mask_cache[frame_idx], (rel_left, rel_top, rel_right, rel_bot))
+                                else:
+                                    core.adaptive_mask_paste(mask[frame_idx], mask_cache, (rel_left, rel_top, rel_right, rel_bot))
                         else:
-                            core.random_mask(mask, (0, 0, crop_w, crop_h), factor=mask_irregularity, size=mask_quality)
+                            if len(mask.shape) == 2:
+                                # Add extra dimension for single frame mask
+                                mask = mask[None, :, :]
+                                # Warn if this happens (shouldn't get here probably)
+                                logging.info("[MakeTileSEGSForVideo] Warning: unexpected mask shape for irregular mask application.")
+                            # Generate one random mask for the segment and apply to all frames
+                            random_mask_2d = np.zeros_like(mask[0])
+                            core.random_mask(random_mask_2d, (rel_left, rel_top, rel_right, rel_bot), factor=mask_irregularity, size=mask_quality, fast=fast, seed=seed)
+                            for frame_idx in range(batch_size):
+                                mask[frame_idx] = random_mask_2d
 
-                        # Corner filling for edge tiles
-                        if x1 == 0:
-                            pad = int(crop_w / 16)
-                            mask[:, :pad] = 1.0
+                        # corner filling for 3D masks with trapezoidal shape
+                        if rel_left == 0:
+                            pad = int((x2 - x1) / 8)
+                            trap_long_edge = max(rel_bot - rel_top - pad//2, pad)
+                            trap_mask = create_trapezoidal_corner_mask(
+                                trap_long_edge, pad, 'left', is_3d=True, frames=batch_size, slope_angle=edge_slope_angle
+                            )
+                            if rel_top == 0: # left-top corner
+                                mask[:, rel_top:trap_long_edge, :pad] = np.maximum(mask[:, rel_top:trap_long_edge, :pad], trap_mask)
+                            elif rel_bot == mask.shape[1]: # left-bottom corner
+                                mask[:, rel_bot - trap_long_edge:rel_bot, :pad] = np.maximum(mask[:, rel_bot - trap_long_edge:rel_bot, :pad], trap_mask)
+                            else: # left edge only, no corner, center trap_mask vertically
+                                center_start = (rel_bot + rel_top - trap_long_edge) // 2
+                                mask[:, center_start:center_start + trap_long_edge, :pad] = np.maximum(mask[:, center_start:center_start + trap_long_edge, :pad], trap_mask)
 
-                        if y1 == 0:
-                            pad = int(crop_h / 16)
-                            mask[:pad, :] = 1.0
+                               
+                        if rel_top == 0:
+                            pad = int((y2 - y1) / 8)
+                            trap_long_edge = max(rel_right - rel_left - pad//2, pad)
+                            trap_mask = create_trapezoidal_corner_mask(
+                                pad, trap_long_edge, 'top', is_3d=True, frames=batch_size, slope_angle=edge_slope_angle
+                            )
+                            if rel_left == 0: # top-left corner
+                                mask[:, :pad, rel_left:trap_long_edge] = np.maximum(mask[:, :pad, rel_left:trap_long_edge], trap_mask)
+                            elif rel_right == mask.shape[2]: # top-right corner
+                                mask[:, :pad, rel_right - trap_long_edge:rel_right] = np.maximum(mask[:, :pad, rel_right - trap_long_edge:rel_right], trap_mask)
+                            else: # top edge only, no corner, center trap_mask horizontally
+                                center_start = (rel_left + rel_right - trap_long_edge) // 2
+                                mask[:, :pad, center_start:center_start + trap_long_edge] = np.maximum(mask[:, :pad, center_start:center_start + trap_long_edge], trap_mask)
 
-                        if x2 >= iw:
-                            pad = int(crop_w / 16)
-                            mask[:, -pad:] = 1.0
+                        if rel_right == mask.shape[2]:  # shape[2] for width in 3D
+                            pad = int((x2 - x1) / 8)
+                            trap_long_edge = max(rel_bot - rel_top - pad//2, pad)
+                            trap_mask = create_trapezoidal_corner_mask(
+                                trap_long_edge, pad, 'right', is_3d=True, frames=batch_size, slope_angle=edge_slope_angle
+                            )
+                            if rel_top == 0: # right-top corner
+                                mask[:, rel_top:trap_long_edge, -pad:] = np.maximum(mask[:, rel_top:trap_long_edge, -pad:], trap_mask)
+                            elif rel_bot == mask.shape[1]: # right-bottom corner
+                                mask[:, rel_bot - trap_long_edge:rel_bot, -pad:] = np.maximum(mask[:, rel_bot - trap_long_edge:rel_bot, -pad:], trap_mask)
+                            else: # right edge only, no corner, center trap_mask vertically
+                                center_start = (rel_bot + rel_top - trap_long_edge) // 2
+                                mask[:, center_start:center_start + trap_long_edge, -pad:] = np.maximum(mask[:, center_start:center_start + trap_long_edge, -pad:], trap_mask)
 
-                        if y2 >= ih:
-                            pad = int(crop_h / 16)
-                            mask[-pad:, :] = 1.0
+                        if rel_bot == mask.shape[1]:  # shape[1] for height in 3D
+                            pad = int((y2 - y1) / 8)
+                            trap_long_edge = max(rel_right - rel_left - pad//2, pad)
+                            trap_mask = create_trapezoidal_corner_mask(
+                                pad, trap_long_edge, 'bottom', is_3d=True, frames=batch_size, slope_angle=edge_slope_angle
+                            )
+                            if rel_left == 0: # bottom-left corner
+                                mask[:, -pad:, rel_left:trap_long_edge] = np.maximum(mask[:, -pad:, rel_left:trap_long_edge], trap_mask)
+                            elif rel_right == mask.shape[2]: # bottom-right corner
+                                mask[:, -pad:, rel_right - trap_long_edge:rel_right] = np.maximum(mask[:, -pad:, rel_right - trap_long_edge:rel_right], trap_mask)
+                            else: # bottom edge only, no corner, center trap_mask horizontally
+                                center_start = (rel_left + rel_right - trap_long_edge) // 2
+                                mask[:, -pad:, center_start:center_start + trap_long_edge] = np.maximum(mask[:, -pad:, center_start:center_start + trap_long_edge], trap_mask)
+
+                        if rel_left == 0 and rel_top == 0: # left-top corner
+                            #mask a square area to ensure full coverage
+                            edge_size = int((x2 - x1) / 2)
+                            mask[:, :edge_size, :edge_size] = 1
+                        if rel_right == mask.shape[2] and rel_top == 0: # right-top corner
+                            edge_size = int((x2 - x1) / 2)
+                            mask[:, :edge_size, -edge_size:] = 1
+                        if rel_left == 0 and rel_bot == mask.shape[1]: # left-bottom corner
+                            edge_size = int((x2 - x1) / 2)
+                            mask[:, -edge_size:, :edge_size] = 1
+                        if rel_right == mask.shape[2] and rel_bot == mask.shape[1]: # right-bottom corner
+                            edge_size = int((x2 - x1) / 2)
+                            mask[:, -edge_size:, -edge_size:] = 1
+                        
                     else:
-                        mask[:, :] = 1.0
+                        raise Exception("MakeTileSEGSForVideo: For 2D masks, use MakeTileSEGS.")
+                else:
+                    if batch_size > 1:
+                        # 3D mask: fill all frames
+                        mask[:, rel_top:rel_bot, rel_left:rel_right] = 1.0
+                    else:
+                        mask[rel_top:rel_bot, rel_left:rel_right] = 1.0
 
-                
                 mask = torch.tensor(mask)
 
                 if exclusion_mask is not None:
-                    if has_temporal:
-                        # Apply exclusion per frame
-                        for f in range(num_frames):
-                            exclusion_mask_cropped = exclusion_mask[f, cy1:cy2, cx1:cx2]
-                            mask[f][exclusion_mask_cropped != 0] = 0.0
-                    else:
+                    if len(exclusion_mask.shape) == 3:  # 3D temporal mask
+                        exclusion_mask_cropped = exclusion_mask[:, cy1:cy2, cx1:cx2]
+                    else:  # 2D mask
                         exclusion_mask_cropped = exclusion_mask[cy1:cy2, cx1:cx2]
-                        mask[exclusion_mask_cropped != 0] = 0.0
+
+                    mask[exclusion_mask_cropped != 0] = 0.0
 
                 if and_mask is not None:
-                    if has_temporal:
-                        # Apply inclusion per frame
-                        for f in range(num_frames):
-                            and_mask_cropped = and_mask[f, cy1:cy2, cx1:cx2]
-                            mask[f][and_mask_cropped == 0] = 0.0
-                    else:
+                    if len(and_mask.shape) == 3:  # 3D temporal mask
+                        and_mask_cropped = and_mask[:, cy1:cy2, cx1:cx2]
+                    else:  # 2D mask
                         and_mask_cropped = and_mask[cy1:cy2, cx1:cx2]
-                        mask[and_mask_cropped == 0] = 0.0
+
+                    mask[and_mask_cropped == 0] = 0.0
 
                 is_mask_zero = torch.all(mask == 0.0).item()
 
                 if not is_mask_zero:
-                    item = SEG(None, mask.numpy(), 1.0, crop_region, bbox, "", None)
+                    mask_numpy = mask.numpy()
+                    debug_output_mask(mask_numpy)
+                    item = SEG(None, mask_numpy, 1.0, crop_region, bbox, "", None)
                     new_segs.append(item)
 
                 x += bbox_size - w_overlap_size
             y += bbox_size - h_overlap_size
 
         res = (ih, iw), new_segs  # segs
-        return (res,)
+        return (res, )
 
 
 class MakeTileSEGS:
@@ -2060,7 +2209,13 @@ class MakeTileSEGS:
             and_mask = utils.resize_mask(and_mask, (ih, iw))
             and_mask = utils.dilate_mask(and_mask.cpu().numpy(), filter_segs_dilation)
 
-            a, b = core.mask_to_segs(and_mask, True, 1.0, False, 0)
+            # Create temporal projection
+            if len(and_mask.shape) == 3:
+                temporal_projection = np.max(and_mask, axis=0)
+            else:
+                temporal_projection = and_mask
+
+            a, b = core.mask_to_segs(temporal_projection, True, 1.0, False, 0)
             if len(b) == 0:
                 return ((a, b),)
 
@@ -2162,11 +2317,17 @@ class MakeTileSEGS:
                 mask = torch.tensor(mask)
 
                 if exclusion_mask is not None:
-                    exclusion_mask_cropped = exclusion_mask[cy1:cy2, cx1:cx2]
+                    if len(exclusion_mask.shape) == 3:
+                        exclusion_mask_cropped = exclusion_mask[0, cy1:cy2, cx1:cx2]  # Take first frame for images
+                    else:  # 2D mask
+                        exclusion_mask_cropped = exclusion_mask[cy1:cy2, cx1:cx2]
                     mask[exclusion_mask_cropped != 0] = 0.0
 
                 if and_mask is not None:
-                    and_mask_cropped = and_mask[cy1:cy2, cx1:cx2]
+                    if len(and_mask.shape) == 3:
+                        and_mask_cropped = and_mask[0, cy1:cy2, cx1:cx2]
+                    else:
+                        and_mask_cropped = and_mask[cy1:cy2, cx1:cx2]
                     mask[and_mask_cropped == 0] = 0.0
 
                 is_mask_zero = torch.all(mask == 0.0).item()

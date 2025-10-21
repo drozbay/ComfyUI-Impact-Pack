@@ -2427,13 +2427,118 @@ def update_node_status(node, text, progress=None):
         "text": text
     }, PromptServer.instance.client_id)
 
+    
+def _gpu_random_irregular_mask_impl(h, w, rect, factor, octaves=3, seed=None):
+    import torch
+    import torch.nn.functional as F
+    from comfy import model_management
 
-def random_mask_raw(mask, bbox, factor):
+    # Resolve rectangle (x1, y1, x2, y2)
+    if rect is None:
+        x1, y1, x2, y2 = 0, 0, w, h
+    else:
+        x1, y1, x2, y2 = rect
+
+    rect_w = max(1, x2 - x1)
+    rect_h = max(1, y2 - y1)
+
+    A = max(6, int(min(rect_w, rect_h) * factor / 4)) if factor > 0 else 0
+
+    try:
+        if 'model_management' in globals():
+            device = model_management.get_torch_device()
+        else:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    except Exception:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=device).manual_seed(seed)
+
+    # Coordinate grid
+    yy = torch.arange(h, device=device).view(h, 1).expand(h, w)
+    xx = torch.arange(w, device=device).view(1, w).expand(h, w)
+
+    # Inside-rect mask
+    inside = (xx >= x1) & (xx < x2) & (yy >= y1) & (yy < y2)
+
+    if A == 0:
+        # No irregularity requested, just fill rectangle
+        out = torch.zeros((h, w), device=device, dtype=torch.float32)
+        out[inside] = 1.0
+        return out.detach().cpu().numpy().astype(np.float32)
+
+    # Distance to rect border (for points inside); outside gets -1
+    dx1 = (xx - x1).to(torch.float32)
+    dx2 = (x2 - 1 - xx).to(torch.float32)
+    dy1 = (yy - y1).to(torch.float32)
+    dy2 = (y2 - 1 - yy).to(torch.float32)
+    dist = torch.minimum(torch.minimum(dx1, dx2), torch.minimum(dy1, dy2))
+    dist = torch.where(inside, dist, torch.tensor(-1.0, device=device))
+
+    # Build low-frequency noise via multi-octave random fields (fBm-like)
+    # Keep it light for speed; octaves=3 by default.
+    noise_acc = None
+    weight_sum = 0.0
+
+    # Base scale tied to rect size to keep detail pleasant
+    base_scale = max(8, min(128, min(rect_h, rect_w) // 4))
+    for k in range(octaves):
+        sh = max(8, base_scale // (2 ** k))
+        sw = max(8, int(base_scale * w / max(1, h)) // (2 ** k))
+        # Ensure at least 8x8
+        sh = max(8, sh)
+        sw = max(8, sw)
+
+        r = torch.rand((1, 1, sh, sw), generator=generator, device=device, dtype=torch.float32)
+        r = F.interpolate(r, size=(h, w), mode='bilinear', align_corners=False)
+        w_k = 1.0 / (2 ** k)
+        noise_acc = r * w_k if noise_acc is None else (noise_acc + r * w_k)
+        weight_sum += w_k
+
+    noise = noise_acc / weight_sum
+    noise = noise[0, 0]  # (H, W)
+
+    threshold = A * noise
+
+    # Irregular border: keep points whose distance to rect border >= threshold
+    out = torch.zeros((h, w), device=device, dtype=torch.float32)
+    out = torch.where((dist >= threshold) & inside, torch.tensor(1.0, device=device), torch.tensor(0.0, device=device))
+
+    return out.detach().cpu().numpy().astype(np.float32)
+
+
+def gpu_random_irregular_mask_numpy(h, w, factor, seed=None):
+    """ wrapper to generate a full-crop irregular mask on GPU and return numpy float32 (H, W)."""
+    return _gpu_random_irregular_mask_impl(h, w, rect=None, factor=factor, seed=seed)
+
+
+def gpu_random_irregular_rect_mask_numpy(h, w, rect, factor, seed=None):
+    """GPU irregular mask for a specific rectangle within an HxW canvas; returns numpy float32 (H, W)."""
+    return _gpu_random_irregular_mask_impl(h, w, rect=rect, factor=factor, seed=seed)
+
+def random_mask(mask, bbox, factor, size=128, fast=False, seed=None):
+    if fast:
+        random_mask_raw_fast(mask, bbox, factor, seed=seed)
+        return
+    small_mask = np.zeros((size, size)).astype(np.float32)
+    random_mask_raw(small_mask, (0, 0, size, size), factor, seed=seed)
+
+    x1, y1, x2, y2 = bbox
+    small_mask = torch.tensor(small_mask).unsqueeze(0).unsqueeze(0)
+    bbox_mask = torch.nn.functional.interpolate(small_mask, size=(y2 - y1, x2 - x1), mode='bilinear', align_corners=False)
+    bbox_mask = bbox_mask.squeeze(0).squeeze(0)
+    mask[y1:y2, x1:x2] = bbox_mask
+
+def random_mask_raw(mask, bbox, factor, seed=None):
     x1, y1, x2, y2 = bbox
     w = x2 - x1
     h = y2 - y1
 
     factor = max(6, int(min(w, h) * factor / 4))
+
+    rng = np.random.RandomState(seed)
 
     def draw_random_circle(center, radius):
         i, j = center
@@ -2445,7 +2550,7 @@ def random_mask_raw(mask, bbox, factor):
     def draw_irregular_line(start, end, pivot, is_vertical):
         i = start
         while i < end:
-            base_radius = np.random.randint(5, factor)
+            base_radius = rng.randint(5, factor)
             radius = int(base_radius)
 
             if is_vertical:
@@ -2474,15 +2579,10 @@ def random_mask_raw(mask, bbox, factor):
     mask[y1 + factor:y2 - factor, x1 + factor:x2 - factor] = 1.0
 
 
-def random_mask(mask, bbox, factor, size=128):
-    small_mask = np.zeros((size, size)).astype(np.float32)
-    random_mask_raw(small_mask, (0, 0, size, size), factor)
-
-    x1, y1, x2, y2 = bbox
-    small_mask = torch.tensor(small_mask).unsqueeze(0).unsqueeze(0)
-    bbox_mask = torch.nn.functional.interpolate(small_mask, size=(y2 - y1, x2 - x1), mode='bilinear', align_corners=False)
-    bbox_mask = bbox_mask.squeeze(0).squeeze(0)
-    mask[y1:y2, x1:x2] = bbox_mask
+def random_mask_raw_fast(mask, bbox, factor, seed=None):
+    h, w = mask.shape
+    new_mask = gpu_random_irregular_rect_mask_numpy(h, w, bbox, factor, seed=seed)
+    mask[:, :] = new_mask
 
 
 def adaptive_mask_paste(dest_mask, src_mask, bbox):

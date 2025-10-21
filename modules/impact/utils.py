@@ -422,57 +422,48 @@ def use_gpu_opencv():
 
 
 def dilate_mask(mask, dilation_factor, iter=1):
-    if dilation_factor == 0:
-        return mask
-    
-    # Handle temporal masks (3D)
-    if isinstance(mask, torch.Tensor) and len(mask.shape) == 3:
-        # Process each frame independently
-        dilated_frames = []
-        kernel = np.ones((abs(dilation_factor), abs(dilation_factor)), np.uint8)
-        
-        for i in range(mask.shape[0]):
-            frame_mask = mask[i].cpu().numpy()
-            
-            if use_gpu_opencv():
-                frame_mask = cv2.UMat(frame_mask)
-                kernel_gpu = cv2.UMat(kernel)
-                if dilation_factor > 0:
-                    result = cv2.dilate(frame_mask, kernel_gpu, iter)
-                else:
-                    result = cv2.erode(frame_mask, kernel_gpu, iter)
-                dilated_frames.append(torch.from_numpy(result.get()))
-            else:
-                if dilation_factor > 0:
-                    result = cv2.dilate(frame_mask, kernel, iter)
-                else:
-                    result = cv2.erode(frame_mask, kernel, iter)
-                dilated_frames.append(torch.from_numpy(result))
-        
-        # Stack frames back into temporal mask
-        return torch.stack(dilated_frames, dim=0)
-    
-    # 2D mask
-    mask = make_2d_mask(mask)
-    
+    # ensure mask is numpy array
     if isinstance(mask, torch.Tensor):
         mask = mask.cpu().numpy()
+        
+    # Check if mask is 3d numpy array
+    if mask.ndim == 3 and mask.shape[0] > 1:
+        if dilation_factor == 0:
+            return mask
+        # Loop over each frame (dimension 0)
+        dilated_frames = []
+        for i in range(mask.shape[0]):
+            frame = mask[i]
+            dilated_frame = dilate_mask(frame, dilation_factor, iter)
+            dilated_frames.append(dilated_frame)
+        return np.stack(dilated_frames, axis=0)
+
+    if dilation_factor == 0:
+        return make_2d_mask(mask)
+
+    mask = make_2d_mask(mask)
+
+    mask_uint8 = (mask * 255).astype(np.uint8)  # prepare_mask_for_opencv(mask)
+    if mask_uint8 is None:
+        return mask
 
     kernel = np.ones((abs(dilation_factor), abs(dilation_factor)), np.uint8)
 
     if use_gpu_opencv():
-        mask = cv2.UMat(mask)
+        mask_uint8 = cv2.UMat(mask_uint8)
         kernel = cv2.UMat(kernel)
 
     if dilation_factor > 0:
-        result = cv2.dilate(mask, kernel, iter)
+        result = cv2.dilate(mask_uint8, kernel, iter)
     else:
-        result = cv2.erode(mask, kernel, iter)
+        result = cv2.erode(mask_uint8, kernel, iter)
 
     if use_gpu_opencv():
-        return result.get()
-    else:
-        return result
+        result = result.get()
+    
+    result = result.astype(np.float32) / 255.0
+    return result
+    #return restore_mask_from_opencv(result)
 
 
 def dilate_masks(segmasks, dilation_factor, iter=1):
