@@ -748,7 +748,7 @@ class SAM2Wrapper:
         for k, v in temp_masks.items():
             m = torch.stack(v, dim=0)
             m = utils.remove_padding(m, padding)
-            result[k] = utils.resize_with_padding(m, orig_video_width, orig_video_height)[0]
+            result[k] = utils.general_tensor_resize(m, orig_video_width, orig_video_height)
 
         return result
 
